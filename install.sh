@@ -27,17 +27,6 @@ run_sudo mkdir -p /var/log/fluent
 run_sudo mkdir -p /etc/fluent
 
 echo "========================================================"
-echo "Extracting Fluentd installation files..."
-echo "========================================================"
-
-unzip fluentd_install_scripts_ubuntu.zip
-if [ $? -ne 0 ]; then
-  echo "[ERROR] Extraction failed. Exiting."
-  exit 1
-fi
-rm fluentd_install_scripts_ubuntu.zip
-
-echo "========================================================"
 echo "Installing Fluentd..."
 echo "========================================================"
 
