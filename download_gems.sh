@@ -30,60 +30,73 @@ if ! command -v gem >/dev/null 2>&1; then
   exit 1
 fi
 
-# Function to download a gem and its dependencies recursively
-download_gem_with_deps() {
-  local gemname=$1
-  local gemfile_pattern="${gemname}-*.gem"
-  
-  # Skip if already downloaded
-  if ls "${GEMS_DIR}/${gemfile_pattern}" 2>/dev/null | head -1 >/dev/null; then
-    log "  Already downloaded: ${gemname}"
-    return 0
-  fi
-  
-  log "Downloading: ${gemname}"
-  
-  # Fetch the gem file
-  if gem fetch "${gemname}" 2>/dev/null; then
-    # Move .gem file to gems directory
-    if ls ${gemfile_pattern} 2>/dev/null | head -1; then
-      mv ${gemfile_pattern} "${GEMS_DIR}/" 2>/dev/null || true
-      log "  ✓ Downloaded: ${gemname}"
-    fi
-  else
-    log "  ✗ Failed to fetch: ${gemname}"
-    return 1
-  fi
-  
-  # Get dependencies and download them recursively
-  local deps_file=$(mktemp)
-  gem dependency "${gemname}" --remote 2>/dev/null | \
-    grep -E "^\s+[A-Za-z]" | \
-    awk '{print $2}' | \
-    sed 's/[(),]//g' | \
-    awk -F' ' '{print $1}' | \
-    sort -u > "$deps_file" || true
-  
-  if [ -s "$deps_file" ]; then
-    log "  Dependencies for ${gemname}:"
-    while IFS= read -r dep; do
-      if [ -n "$dep" ] && [ "$dep" != "bundler" ]; then
-        # Extract gem name (remove version constraints)
-        local dep_name=$(echo "$dep" | sed 's/[<>=!].*//' | xargs)
-        if [ -n "$dep_name" ]; then
-          download_gem_with_deps "$dep_name"
-        fi
-      fi
-    done < "$deps_file"
-  fi
-  rm -f "$deps_file"
-}
-
-# Download all gems and their dependencies
+# Simple and fast: use gem install to download all dependencies automatically
 log "Downloading gem files and dependencies..."
 
+# Use a temporary directory to simulate installation and download all dependencies
+TEMP_INSTALL_DIR=$(mktemp -d)
+trap "rm -rf ${TEMP_INSTALL_DIR}" EXIT
+
+# Download each gem with all its dependencies
 for gemname in "${GEMS[@]}"; do
-  download_gem_with_deps "${gemname}"
+  log "Downloading: ${gemname} (with dependencies)..."
+  
+  # Use gem install with --install-dir to download all dependencies
+  # This automatically resolves and downloads all required gems
+  gem install "${gemname}" \
+    --install-dir "${TEMP_INSTALL_DIR}" \
+    --no-document \
+    --no-wrappers \
+    2>&1 | grep -E "(Successfully|Installing|Fetching)" || true
+  
+  # Copy all downloaded .gem files to our directory
+  find "${TEMP_INSTALL_DIR}/cache" -name "*.gem" 2>/dev/null | while read gemfile; do
+    if [ -f "$gemfile" ]; then
+      cp "$gemfile" "${GEMS_DIR}/" 2>/dev/null || true
+    fi
+  done
+  
+  # Also try direct fetch as backup
+  gem fetch "${gemname}" 2>/dev/null || true
+done
+
+# Move any .gem files from current directory
+find . -maxdepth 1 -name "*.gem" -exec mv {} "${GEMS_DIR}/" \; 2>/dev/null || true
+
+# Also explicitly download known dependencies that might be missed
+log "Downloading additional known dependencies..."
+ADDITIONAL_DEPS=(
+  jsonpath
+  activerecord-import
+  activerecord
+  activemodel
+  activesupport
+  tzinfo
+  concurrent-ruby
+  i18n
+  rack
+  nokogiri
+  ffi
+  connection_pool
+  mysql2-cs-bind
+)
+
+# Download activerecord-import version 1.x (required by fluent-plugin-sql)
+log "Downloading activerecord-import version 1.x for compatibility..."
+gem fetch activerecord-import -v "~> 1.0" 2>/dev/null || \
+gem fetch activerecord-import -v "1.1.0" 2>/dev/null || true
+if ls activerecord-import-1.*.gem 2>/dev/null | head -1; then
+  mv activerecord-import-1.*.gem "${GEMS_DIR}/" 2>/dev/null || true
+fi
+
+for dep in "${ADDITIONAL_DEPS[@]}"; do
+  if ! ls "${GEMS_DIR}/${dep}"-*.gem 2>/dev/null | head -1 >/dev/null; then
+    log "Downloading additional dependency: ${dep}"
+    gem fetch "${dep}" 2>/dev/null || true
+    if ls "${dep}"-*.gem 2>/dev/null | head -1; then
+      mv "${dep}"-*.gem "${GEMS_DIR}/" 2>/dev/null || true
+    fi
+  fi
 done
 
 # Clean up any .gem files in current directory
